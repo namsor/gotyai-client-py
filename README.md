@@ -10,12 +10,103 @@ For more information, please visit [https://gotyai.com/](https://gotyai.com/)
 
 ## Requirements.
 
-Python 2.7 and 3.4+
+Python &gt;&#x3D;3.7
+
+## Migration from other generators like python and python-legacy
+
+### Changes
+1. This generator uses spec case for all (object) property names and parameter names.
+    - So if the spec has a property name like camelCase, it will use camelCase rather than camel_case
+    - So you will need to update how you input and read properties to use spec case
+2. Endpoint parameters are stored in dictionaries to prevent collisions (explanation below)
+    - So you will need to update how you pass data in to endpoints
+3. Endpoint responses now include the original response, the deserialized response body, and (todo)the deserialized headers
+    - So you will need to update your code to use response.body to access deserialized data
+4. All validated data is instantiated in an instance that subclasses all validated Schema classes and Decimal/str/list/tuple/frozendict/NoneClass/BoolClass/bytes/io.FileIO
+    - This means that you can use isinstance to check if a payload validated against a schema class
+    - This means that no data will be of type None/True/False
+        - ingested None will subclass NoneClass
+        - ingested True will subclass BoolClass
+        - ingested False will subclass BoolClass
+        - So if you need to check is True/False/None, instead use instance.is_true_oapg()/.is_false_oapg()/.is_none_oapg()
+5. All validated class instances are immutable except for ones based on io.File
+    - This is because if properties were changed after validation, that validation would no longer apply
+    - So no changing values or property values after a class has been instantiated
+6. String + Number types with formats
+    - String type data is stored as a string and if you need to access types based on its format like date,
+    date-time, uuid, number etc then you will need to use accessor functions on the instance
+    - type string + format: See .as_date_oapg, .as_datetime_oapg, .as_decimal_oapg, .as_uuid_oapg
+    - type number + format: See .as_float_oapg, .as_int_oapg
+    - this was done because openapi/json-schema defines constraints. string data may be type string with no format
+    keyword in one schema, and include a format constraint in another schema
+    - So if you need to access a string format based type, use as_date_oapg/as_datetime_oapg/as_decimal_oapg/as_uuid_oapg
+    - So if you need to access a number format based type, use as_int_oapg/as_float_oapg
+7. Property access on AnyType(type unset) or object(dict) schemas
+    - Only required keys with valid python names are properties like .someProp and have type hints
+    - All optional keys may not exist, so properties are not defined for them
+    - One can access optional values with dict_instance['optionalProp'] and KeyError will be raised if it does not exist
+    - Use get_item_oapg if you need a way to always get a value whether or not the key exists
+        - If the key does not exist, schemas.unset is returned from calling dict_instance.get_item_oapg('optionalProp')
+        - All required and optional keys have type hints for this method, and @typing.overload is used
+        - A type hint is also generated for additionalProperties accessed using this method
+    - So you will need to update you code to use some_instance['optionalProp'] to access optional property
+    and additionalProperty values
+8. The location of the api classes has changed
+    - Api classes are located in your_package.apis.tags.some_api
+    - This change was made to eliminate redundant code generation
+    - Legacy generators generated the same endpoint twice if it had > 1 tag on it
+    - This generator defines an endpoint in one class, then inherits that class to generate
+      apis by tags and by paths
+    - This change reduces code and allows quicker run time if you use the path apis
+        - path apis are at your_package.apis.paths.some_path
+    - Those apis will only load their needed models, which is less to load than all of the resources needed in a tag api
+    - So you will need to update your import paths to the api classes
+
+### Why are Oapg and _oapg used in class and method names?
+Classes can have arbitrarily named properties set on them
+Endpoints can have arbitrary operationId method names set
+For those reasons, I use the prefix Oapg and _oapg to greatly reduce the likelihood of collisions
+on protected + public classes/methods.
+oapg stands for OpenApi Python Generator.
+
+### Object property spec case
+This was done because when payloads are ingested, they can be validated against N number of schemas.
+If the input signature used a different property name then that has mutated the payload.
+So SchemaA and SchemaB must both see the camelCase spec named variable.
+Also it is possible to send in two properties, named camelCase and camel_case in the same payload.
+That use case should be support so spec case is used.
+
+### Parameter spec case
+Parameters can be included in different locations including:
+- query
+- path
+- header
+- cookie
+
+Any of those parameters could use the same parameter names, so if every parameter
+was included as an endpoint parameter in a function signature, they would collide.
+For that reason, each of those inputs have been separated out into separate typed dictionaries:
+- query_params
+- path_params
+- header_params
+- cookie_params
+
+So when updating your code, you will need to pass endpoint parameters in using those
+dictionaries.
+
+### Endpoint responses
+Endpoint responses have been enriched to now include more information.
+Any response reom an endpoint will now include the following properties:
+response: urllib3.HTTPResponse
+body: typing.Union[Unset, Schema]
+headers: typing.Union[Unset, TODO]
+Note: response header deserialization has not yet been added
+
 
 ## Installation & Usage
 ### pip install
 
-If the python package is hosted on Github, you can install directly from Github
+If the python package is hosted on a repository, you can install directly using:
 
 ```sh
 pip install git+https://github.com/namsor/gotyai-client-py.git
@@ -24,7 +115,7 @@ pip install git+https://github.com/namsor/gotyai-client-py.git
 
 Then import the package:
 ```python
-import gotyai_client 
+import gotyai_client
 ```
 
 ### Setuptools
@@ -46,27 +137,53 @@ import gotyai_client
 Please follow the [installation procedure](#installation--usage) and then run the following:
 
 ```python
-from __future__ import print_function
+
 import time
 import gotyai_client
-from gotyai_client.rest import ApiException
 from pprint import pprint
+from gotyai_client.apis.tags import admin_api
+from gotyai_client.model.api_key_out import APIKeyOut
+from gotyai_client.model.api_period_usage_out import APIPeriodUsageOut
+from gotyai_client.model.api_plan_subscription_out import APIPlanSubscriptionOut
+from gotyai_client.model.api_plans_out import APIPlansOut
+from gotyai_client.model.api_usage_aggregated_out import APIUsageAggregatedOut
+from gotyai_client.model.api_usage_history_out import APIUsageHistoryOut
+from gotyai_client.model.billing_history_out import BillingHistoryOut
+from gotyai_client.model.billing_info_in_out import BillingInfoInOut
+from gotyai_client.model.currencies_out import CurrenciesOut
+from gotyai_client.model.gotya_counter_out import GotyaCounterOut
+from gotyai_client.model.software_version_out import SoftwareVersionOut
+from gotyai_client.model.spam_stats_out import SpamStatsOut
+from gotyai_client.model.stripe_customer_out import StripeCustomerOut
+from gotyai_client.model.system_metrics_out import SystemMetricsOut
+from gotyai_client.model.user_info_out import UserInfoOut
+# Defining the host is optional and defaults to http://ns3044521.ip-91-121-222.eu:8080/gotyai
+# See configuration.py for a list of all supported configuration parameters.
+configuration = gotyai_client.Configuration(
+    host = "http://ns3044521.ip-91-121-222.eu:8080/gotyai"
+)
+
+# The client must configure the authentication and authorization parameters
+# in accordance with the API server security policy.
+# Examples for each auth method are provided below, use the example that
+# satisfies your auth use case.
 
 # Configure API key authorization: api_key
-configuration = gotyai_client.Configuration()
-configuration.api_key['X-API-KEY'] = 'YOUR_API_KEY'
+configuration.api_key['api_key'] = 'YOUR_API_KEY'
+
 # Uncomment below to setup prefix (e.g. Bearer) for API key, if needed
-# configuration.api_key_prefix['X-API-KEY'] = 'Bearer'
+# configuration.api_key_prefix['api_key'] = 'Bearer'
 
-# create an instance of the API class
-api_instance = gotyai_client.AdminApi(gotyai_client.ApiClient(configuration))
-
-try:
-    # List blacklist name pattern.
-    api_instance.abuse_name_patterns()
-except ApiException as e:
-    print("Exception when calling AdminApi->abuse_name_patterns: %s\n" % e)
-
+# Enter a context with an instance of the API client
+with gotyai_client.ApiClient(configuration) as api_client:
+    # Create an instance of the API class
+    api_instance = admin_api.AdminApi(api_client)
+    
+    try:
+        # List blacklist name pattern.
+        api_instance.abuse_name_patterns()
+    except gotyai_client.ApiException as e:
+        print("Exception when calling AdminApi->abuse_name_patterns: %s\n" % e)
 ```
 
 ## Documentation for API Endpoints
@@ -75,106 +192,105 @@ All URIs are relative to *http://ns3044521.ip-91-121-222.eu:8080/gotyai*
 
 Class | Method | HTTP request | Description
 ------------ | ------------- | ------------- | -------------
-*AdminApi* | [**abuse_name_patterns**](docs/AdminApi.md#abuse_name_patterns) | **GET** /api2/json/nameBlacklistPatterns | List blacklist name pattern.
-*AdminApi* | [**add_credits**](docs/AdminApi.md#add_credits) | **GET** /api2/json/addCredits/{apiKey}/{usageCredits}/{userMessage} | Add usage credits to an API Key.
-*AdminApi* | [**api_key_info**](docs/AdminApi.md#api_key_info) | **GET** /api2/json/apiKeyInfo | Read API Key info.
-*AdminApi* | [**api_usage**](docs/AdminApi.md#api_usage) | **GET** /api2/json/apiUsage | Print current API usage.
-*AdminApi* | [**api_usage_history**](docs/AdminApi.md#api_usage_history) | **GET** /api2/json/apiUsageHistory | Print historical API usage.
-*AdminApi* | [**api_usage_history_aggregate**](docs/AdminApi.md#api_usage_history_aggregate) | **GET** /api2/json/apiUsageHistoryAggregate | Print historical API usage (in an aggregated view, by service, by day/hour/min).
-*AdminApi* | [**available_plans**](docs/AdminApi.md#available_plans) | **GET** /api2/json/availablePlans | List all available plans in the default currency (usd).
-*AdminApi* | [**available_plans1**](docs/AdminApi.md#available_plans1) | **GET** /api2/json/availablePlans/{token} | List all available plans in the user&#39;s preferred currency.
-*AdminApi* | [**billing_currencies**](docs/AdminApi.md#billing_currencies) | **GET** /api2/json/billingCurrencies | List possible currency options for billing (USD, EUR, GBP, ...)
-*AdminApi* | [**billing_history**](docs/AdminApi.md#billing_history) | **GET** /api2/json/billingHistory/{token} | Read the history billing information (invoices paid via Stripe or manually).
-*AdminApi* | [**billing_info**](docs/AdminApi.md#billing_info) | **GET** /api2/json/billingInfo/{token} | Read the billing information (company name, address, phone, vat ID)
-*AdminApi* | [**charge_new**](docs/AdminApi.md#charge_new) | **GET** /api2/json/chargeNew/{stripeToken}/{stripeEmail} | Create a Stripe Customer V2, based on a payment card token (from secure StripeJS) and email.
-*AdminApi* | [**corporate_key**](docs/AdminApi.md#corporate_key) | **GET** /api2/json/corporateKey/{apiKey}/{corporate} | Setting an API Key to a corporate status.
-*AdminApi* | [**count_spam_non_spam**](docs/AdminApi.md#count_spam_non_spam) | **GET** /api2/json/countSpamNonSpam/{durationMillis} | Get email spam statistics over custom duration.
-*AdminApi* | [**count_spam_non_spam1**](docs/AdminApi.md#count_spam_non_spam1) | **GET** /api2/json/countSpamNonSpam | Email spam statistics.
-*AdminApi* | [**debug_level**](docs/AdminApi.md#debug_level) | **GET** /api2/json/debugLevel/{logger}/{level} | Update debug level for a classifier
-*AdminApi* | [**disable**](docs/AdminApi.md#disable) | **GET** /api2/json/disable/{source}/{disabled} | Activate/deactivate an API Key.
-*AdminApi* | [**email_blacklist_pattern_add**](docs/AdminApi.md#email_blacklist_pattern_add) | **GET** /api2/json/emailBlacklistPatternAdd/{pattern} | Add blacklist email pattern.
-*AdminApi* | [**email_blacklist_pattern_remove**](docs/AdminApi.md#email_blacklist_pattern_remove) | **GET** /api2/json/emailBlacklistPatternRemove/{pattern} | Remove blacklist email pattern.
-*AdminApi* | [**email_blacklist_patterns**](docs/AdminApi.md#email_blacklist_patterns) | **GET** /api2/json/emailBlacklistPatterns | List all blacklist email patterns.
-*AdminApi* | [**explainability**](docs/AdminApi.md#explainability) | **GET** /api2/json/explainability/{source}/{explainable} | Activate/deactivate explainability for a source.
-*AdminApi* | [**flush**](docs/AdminApi.md#flush) | **GET** /api2/json/flush | Flush counters.
-*AdminApi* | [**gotya_counter**](docs/AdminApi.md#gotya_counter) | **GET** /api2/json/namsorCounter | Get the overall API counter
-*AdminApi* | [**invalidate_cache**](docs/AdminApi.md#invalidate_cache) | **GET** /api2/json/invalidateCache | Invalidate system caches.
-*AdminApi* | [**ip_addresses_blacklist_candidates**](docs/AdminApi.md#ip_addresses_blacklist_candidates) | **GET** /api2/json/ipAddressesBlacklistCandidates | List IP blacklist candidates.
-*AdminApi* | [**name_blacklist_pattern_add**](docs/AdminApi.md#name_blacklist_pattern_add) | **GET** /api2/json/nameBlacklistPatternAdd/{pattern} | Add blacklist name pattern.
-*AdminApi* | [**name_blacklist_pattern_remove**](docs/AdminApi.md#name_blacklist_pattern_remove) | **GET** /api2/json/nameBlacklistPatternRemove/{pattern} | Remove blacklist name pattern.
-*AdminApi* | [**payment_info**](docs/AdminApi.md#payment_info) | **GET** /api2/json/paymentInfo/{token} | Get the Stripe payment information associated with the current google auth session token.
-*AdminApi* | [**procure_key**](docs/AdminApi.md#procure_key) | **GET** /api2/json/procureKey/{token}/{recaptchav2} | Procure an API Key (sent via Email), based on an auth token and a recaptcha. Keep your API Key secret.
-*AdminApi* | [**procure_key1**](docs/AdminApi.md#procure_key1) | **GET** /api2/json/procureKey/{token} | [compatibility] Retrieve the user&#39;s API Key, based on an auth token. Keep your API Key secret.
-*AdminApi* | [**remove_payment**](docs/AdminApi.md#remove_payment) | **GET** /api2/json/removePayment/{sourceId}/{token} | Remove Stripe card associated with the current google auth session token.
-*AdminApi* | [**remove_user_account**](docs/AdminApi.md#remove_user_account) | **GET** /api2/json/removeUserAccount/{token} | Remove the user account.
-*AdminApi* | [**remove_user_account_on_behalf**](docs/AdminApi.md#remove_user_account_on_behalf) | **GET** /api2/json/removeUserAccountOnBehalf/{apiKey} | Remove (on behalf) a user account.
-*AdminApi* | [**resend_key**](docs/AdminApi.md#resend_key) | **GET** /api2/json/resendKey/{token}/{recaptchav2} | Resend an API Key (sent via Email), based on an auth token and a recaptcha as well as verification link. Keep your API Key secret.
-*AdminApi* | [**retrieve_key**](docs/AdminApi.md#retrieve_key) | **GET** /api2/json/retrieveKey/{token} | Retrieve the user&#39;s API Key, based on an auth token. Keep your API Key secret.
-*AdminApi* | [**shutdown**](docs/AdminApi.md#shutdown) | **GET** /api2/json/shutdown | Stop learning and shutdown system.
-*AdminApi* | [**signups**](docs/AdminApi.md#signups) | **GET** /api2/json/signups/{ipAddress} | List userID signups by IP address.
-*AdminApi* | [**software_version**](docs/AdminApi.md#software_version) | **GET** /api2/json/softwareVersion | Get the current software version
-*AdminApi* | [**spamsurge**](docs/AdminApi.md#spamsurge) | **GET** /api2/json/spamsurge/{blockDisposableEmails} | Activate/deactivate blocking of disposable emails in case of spam surge.
-*AdminApi* | [**stats**](docs/AdminApi.md#stats) | **GET** /api2/json/stats | Print basic system statistics.
-*AdminApi* | [**subscribe_plan**](docs/AdminApi.md#subscribe_plan) | **GET** /api2/json/subscribePlan/{planName}/{token} | Subscribe to a give API plan, using the user&#39;s preferred or default currency.
-*AdminApi* | [**subscribe_plan_on_behalf**](docs/AdminApi.md#subscribe_plan_on_behalf) | **GET** /api2/json/subscribePlanOnBehalf/{planName}/{apiKey} | Subscribe to a give API plan, using the user&#39;s preferred or default currency (admin only).
-*AdminApi* | [**switch_default_api_key_active**](docs/AdminApi.md#switch_default_api_key_active) | **GET** /api2/json/switchDefaultAPIKeyActive/{defaultBlocked} | Switch defaullt API Key as blocked (need email verif) or active.
-*AdminApi* | [**update_billing_info**](docs/AdminApi.md#update_billing_info) | **POST** /api2/json/updateBillingInfo/{token} | Sets or update the billing information (company name, address, phone, vat ID)
-*AdminApi* | [**update_limit**](docs/AdminApi.md#update_limit) | **GET** /api2/json/updateLimit/{usageLimit}/{hardOrSoft}/{token} | Modifies the hard/soft limit on the API plan&#39;s overages (default is 0$ soft limit).
-*AdminApi* | [**update_payment_default**](docs/AdminApi.md#update_payment_default) | **GET** /api2/json/updatePaymentDefault/{defautSourceId}/{token} | Update the default Stripe card associated with the current google auth session token.
-*AdminApi* | [**update_user_info**](docs/AdminApi.md#update_user_info) | **GET** /api2/json/updateUserInfo/{email}/{displayName}/{token} | Sets or update the user email and name information
-*AdminApi* | [**user_info**](docs/AdminApi.md#user_info) | **GET** /api2/json/userInfo/{token} | Get the user profile associated with the current google auth session token.
-*AdminApi* | [**verify_email**](docs/AdminApi.md#verify_email) | **GET** /api2/json/verifyEmail/{emailToken} | Verifies an email, based on token sent to that email
-*AdminApi* | [**verify_remove_email**](docs/AdminApi.md#verify_remove_email) | **GET** /api2/json/verifyRemoveEmail/{emailToken} | Verifies an email, based on token sent to that email
-*ClassifyApi* | [**explain_many**](docs/ClassifyApi.md#explain_many) | **POST** /api2/json/explainMany/{classifierUuid} | Predict a category given the subjet&#39;s features, with explainability.
-*ClassifyApi* | [**explain_one**](docs/ClassifyApi.md#explain_one) | **POST** /api2/json/explainOne/{classifierUuid} | Predict a category given the subjet&#39;s features, with explainability.
-*ClassifyApi* | [**fit_many**](docs/ClassifyApi.md#fit_many) | **POST** /api2/json/fitMany/{classifierUuid} | Fit multiple rows in the training sample (up to 100)
-*ClassifyApi* | [**fit_one**](docs/ClassifyApi.md#fit_one) | **POST** /api2/json/fitOne/{classifierUuid} | Fit one row in the training sample.
-*ClassifyApi* | [**multinomial**](docs/ClassifyApi.md#multinomial) | **GET** /api2/json/multinomial/{classifierName} | Get the multinomila classifier by its name.
-*ClassifyApi* | [**multinomial1**](docs/ClassifyApi.md#multinomial1) | **GET** /api2/json/multinomial | Get all the multinomila classifiers.
-*ClassifyApi* | [**multinomial_create**](docs/ClassifyApi.md#multinomial_create) | **POST** /api2/json/multinomialCreate | Create a multinomial classiifer
-*ClassifyApi* | [**predict_many**](docs/ClassifyApi.md#predict_many) | **POST** /api2/json/predictMany/{classifierUuid} | Predict a category given the subjecct&#39;s features, for up to 100 rows at a time.
-*ClassifyApi* | [**predict_one**](docs/ClassifyApi.md#predict_one) | **POST** /api2/json/predictOne/{classifierUuid} | Predict a category given the subjet&#39;s features
-
+*AdminApi* | [**abuse_name_patterns**](docs/apis/tags/AdminApi.md#abuse_name_patterns) | **get** /api2/json/nameBlacklistPatterns | List blacklist name pattern.
+*AdminApi* | [**add_credits**](docs/apis/tags/AdminApi.md#add_credits) | **get** /api2/json/addCredits/{apiKey}/{usageCredits}/{userMessage} | Add usage credits to an API Key.
+*AdminApi* | [**api_key_info**](docs/apis/tags/AdminApi.md#api_key_info) | **get** /api2/json/apiKeyInfo | Read API Key info.
+*AdminApi* | [**api_usage**](docs/apis/tags/AdminApi.md#api_usage) | **get** /api2/json/apiUsage | Print current API usage.
+*AdminApi* | [**api_usage_history**](docs/apis/tags/AdminApi.md#api_usage_history) | **get** /api2/json/apiUsageHistory | Print historical API usage.
+*AdminApi* | [**api_usage_history_aggregate**](docs/apis/tags/AdminApi.md#api_usage_history_aggregate) | **get** /api2/json/apiUsageHistoryAggregate | Print historical API usage (in an aggregated view, by service, by day/hour/min).
+*AdminApi* | [**available_plans**](docs/apis/tags/AdminApi.md#available_plans) | **get** /api2/json/availablePlans | List all available plans in the default currency (usd).
+*AdminApi* | [**available_plans1**](docs/apis/tags/AdminApi.md#available_plans1) | **get** /api2/json/availablePlans/{token} | List all available plans in the user&#x27;s preferred currency.
+*AdminApi* | [**billing_currencies**](docs/apis/tags/AdminApi.md#billing_currencies) | **get** /api2/json/billingCurrencies | List possible currency options for billing (USD, EUR, GBP, ...)
+*AdminApi* | [**billing_history**](docs/apis/tags/AdminApi.md#billing_history) | **get** /api2/json/billingHistory/{token} | Read the history billing information (invoices paid via Stripe or manually).
+*AdminApi* | [**billing_info**](docs/apis/tags/AdminApi.md#billing_info) | **get** /api2/json/billingInfo/{token} | Read the billing information (company name, address, phone, vat ID)
+*AdminApi* | [**charge_new**](docs/apis/tags/AdminApi.md#charge_new) | **get** /api2/json/chargeNew/{stripeToken}/{stripeEmail} | Create a Stripe Customer V2, based on a payment card token (from secure StripeJS) and email.
+*AdminApi* | [**corporate_key**](docs/apis/tags/AdminApi.md#corporate_key) | **get** /api2/json/corporateKey/{apiKey}/{corporate} | Setting an API Key to a corporate status.
+*AdminApi* | [**count_spam_non_spam**](docs/apis/tags/AdminApi.md#count_spam_non_spam) | **get** /api2/json/countSpamNonSpam/{durationMillis} | Get email spam statistics over custom duration.
+*AdminApi* | [**count_spam_non_spam1**](docs/apis/tags/AdminApi.md#count_spam_non_spam1) | **get** /api2/json/countSpamNonSpam | Email spam statistics.
+*AdminApi* | [**debug_level**](docs/apis/tags/AdminApi.md#debug_level) | **get** /api2/json/debugLevel/{logger}/{level} | Update debug level for a classifier
+*AdminApi* | [**disable**](docs/apis/tags/AdminApi.md#disable) | **get** /api2/json/disable/{source}/{disabled} | Activate/deactivate an API Key.
+*AdminApi* | [**email_blacklist_pattern_add**](docs/apis/tags/AdminApi.md#email_blacklist_pattern_add) | **get** /api2/json/emailBlacklistPatternAdd/{pattern} | Add blacklist email pattern.
+*AdminApi* | [**email_blacklist_pattern_remove**](docs/apis/tags/AdminApi.md#email_blacklist_pattern_remove) | **get** /api2/json/emailBlacklistPatternRemove/{pattern} | Remove blacklist email pattern.
+*AdminApi* | [**email_blacklist_patterns**](docs/apis/tags/AdminApi.md#email_blacklist_patterns) | **get** /api2/json/emailBlacklistPatterns | List all blacklist email patterns.
+*AdminApi* | [**explainability**](docs/apis/tags/AdminApi.md#explainability) | **get** /api2/json/explainability/{source}/{explainable} | Activate/deactivate explainability for a source.
+*AdminApi* | [**flush**](docs/apis/tags/AdminApi.md#flush) | **get** /api2/json/flush | Flush counters.
+*AdminApi* | [**gotya_counter**](docs/apis/tags/AdminApi.md#gotya_counter) | **get** /api2/json/namsorCounter | Get the overall API counter
+*AdminApi* | [**invalidate_cache**](docs/apis/tags/AdminApi.md#invalidate_cache) | **get** /api2/json/invalidateCache | Invalidate system caches.
+*AdminApi* | [**ip_addresses_blacklist_candidates**](docs/apis/tags/AdminApi.md#ip_addresses_blacklist_candidates) | **get** /api2/json/ipAddressesBlacklistCandidates | List IP blacklist candidates.
+*AdminApi* | [**name_blacklist_pattern_add**](docs/apis/tags/AdminApi.md#name_blacklist_pattern_add) | **get** /api2/json/nameBlacklistPatternAdd/{pattern} | Add blacklist name pattern.
+*AdminApi* | [**name_blacklist_pattern_remove**](docs/apis/tags/AdminApi.md#name_blacklist_pattern_remove) | **get** /api2/json/nameBlacklistPatternRemove/{pattern} | Remove blacklist name pattern.
+*AdminApi* | [**payment_info**](docs/apis/tags/AdminApi.md#payment_info) | **get** /api2/json/paymentInfo/{token} | Get the Stripe payment information associated with the current google auth session token.
+*AdminApi* | [**procure_key**](docs/apis/tags/AdminApi.md#procure_key) | **get** /api2/json/procureKey/{token}/{recaptchav2} | Procure an API Key (sent via Email), based on an auth token and a recaptcha. Keep your API Key secret.
+*AdminApi* | [**procure_key1**](docs/apis/tags/AdminApi.md#procure_key1) | **get** /api2/json/procureKey/{token} | [compatibility] Retrieve the user&#x27;s API Key, based on an auth token. Keep your API Key secret.
+*AdminApi* | [**remove_payment**](docs/apis/tags/AdminApi.md#remove_payment) | **get** /api2/json/removePayment/{sourceId}/{token} | Remove Stripe card associated with the current google auth session token.
+*AdminApi* | [**remove_user_account**](docs/apis/tags/AdminApi.md#remove_user_account) | **get** /api2/json/removeUserAccount/{token} | Remove the user account.
+*AdminApi* | [**remove_user_account_on_behalf**](docs/apis/tags/AdminApi.md#remove_user_account_on_behalf) | **get** /api2/json/removeUserAccountOnBehalf/{apiKey} | Remove (on behalf) a user account.
+*AdminApi* | [**resend_key**](docs/apis/tags/AdminApi.md#resend_key) | **get** /api2/json/resendKey/{token}/{recaptchav2} | Resend an API Key (sent via Email), based on an auth token and a recaptcha as well as verification link. Keep your API Key secret.
+*AdminApi* | [**retrieve_key**](docs/apis/tags/AdminApi.md#retrieve_key) | **get** /api2/json/retrieveKey/{token} | Retrieve the user&#x27;s API Key, based on an auth token. Keep your API Key secret.
+*AdminApi* | [**shutdown**](docs/apis/tags/AdminApi.md#shutdown) | **get** /api2/json/shutdown | Stop learning and shutdown system.
+*AdminApi* | [**signups**](docs/apis/tags/AdminApi.md#signups) | **get** /api2/json/signups/{ipAddress} | List userID signups by IP address.
+*AdminApi* | [**software_version**](docs/apis/tags/AdminApi.md#software_version) | **get** /api2/json/softwareVersion | Get the current software version
+*AdminApi* | [**spamsurge**](docs/apis/tags/AdminApi.md#spamsurge) | **get** /api2/json/spamsurge/{blockDisposableEmails} | Activate/deactivate blocking of disposable emails in case of spam surge.
+*AdminApi* | [**stats**](docs/apis/tags/AdminApi.md#stats) | **get** /api2/json/stats | Print basic system statistics.
+*AdminApi* | [**subscribe_plan**](docs/apis/tags/AdminApi.md#subscribe_plan) | **get** /api2/json/subscribePlan/{planName}/{token} | Subscribe to a give API plan, using the user&#x27;s preferred or default currency.
+*AdminApi* | [**subscribe_plan_on_behalf**](docs/apis/tags/AdminApi.md#subscribe_plan_on_behalf) | **get** /api2/json/subscribePlanOnBehalf/{planName}/{apiKey} | Subscribe to a give API plan, using the user&#x27;s preferred or default currency (admin only).
+*AdminApi* | [**switch_default_api_key_active**](docs/apis/tags/AdminApi.md#switch_default_api_key_active) | **get** /api2/json/switchDefaultAPIKeyActive/{defaultBlocked} | Switch defaullt API Key as blocked (need email verif) or active.
+*AdminApi* | [**update_billing_info**](docs/apis/tags/AdminApi.md#update_billing_info) | **post** /api2/json/updateBillingInfo/{token} | Sets or update the billing information (company name, address, phone, vat ID)
+*AdminApi* | [**update_limit**](docs/apis/tags/AdminApi.md#update_limit) | **get** /api2/json/updateLimit/{usageLimit}/{hardOrSoft}/{token} | Modifies the hard/soft limit on the API plan&#x27;s overages (default is 0$ soft limit).
+*AdminApi* | [**update_payment_default**](docs/apis/tags/AdminApi.md#update_payment_default) | **get** /api2/json/updatePaymentDefault/{defautSourceId}/{token} | Update the default Stripe card associated with the current google auth session token.
+*AdminApi* | [**update_user_info**](docs/apis/tags/AdminApi.md#update_user_info) | **get** /api2/json/updateUserInfo/{email}/{displayName}/{token} | Sets or update the user email and name information
+*AdminApi* | [**user_info**](docs/apis/tags/AdminApi.md#user_info) | **get** /api2/json/userInfo/{token} | Get the user profile associated with the current google auth session token.
+*AdminApi* | [**verify_email**](docs/apis/tags/AdminApi.md#verify_email) | **get** /api2/json/verifyEmail/{emailToken} | Verifies an email, based on token sent to that email
+*AdminApi* | [**verify_remove_email**](docs/apis/tags/AdminApi.md#verify_remove_email) | **get** /api2/json/verifyRemoveEmail/{emailToken} | Verifies an email, based on token sent to that email
+*ClassifyApi* | [**explain_many**](docs/apis/tags/ClassifyApi.md#explain_many) | **post** /api2/json/explainMany/{classifierUuid} | Predict a category given the subjet&#x27;s features, with explainability.
+*ClassifyApi* | [**explain_one**](docs/apis/tags/ClassifyApi.md#explain_one) | **post** /api2/json/explainOne/{classifierUuid} | Predict a category given the subjet&#x27;s features, with explainability.
+*ClassifyApi* | [**fit_many**](docs/apis/tags/ClassifyApi.md#fit_many) | **post** /api2/json/fitMany/{classifierUuid} | Fit multiple rows in the training sample (up to 100)
+*ClassifyApi* | [**fit_one**](docs/apis/tags/ClassifyApi.md#fit_one) | **post** /api2/json/fitOne/{classifierUuid} | Fit one row in the training sample.
+*ClassifyApi* | [**multinomial**](docs/apis/tags/ClassifyApi.md#multinomial) | **get** /api2/json/multinomial/{classifierName} | Get the multinomila classifier by its name.
+*ClassifyApi* | [**multinomial1**](docs/apis/tags/ClassifyApi.md#multinomial1) | **get** /api2/json/multinomial | Get all the multinomila classifiers.
+*ClassifyApi* | [**multinomial_create**](docs/apis/tags/ClassifyApi.md#multinomial_create) | **post** /api2/json/multinomialCreate | Create a multinomial classiifer
+*ClassifyApi* | [**predict_many**](docs/apis/tags/ClassifyApi.md#predict_many) | **post** /api2/json/predictMany/{classifierUuid} | Predict a category given the subjecct&#x27;s features, for up to 100 rows at a time.
+*ClassifyApi* | [**predict_one**](docs/apis/tags/ClassifyApi.md#predict_one) | **post** /api2/json/predictOne/{classifierUuid} | Predict a category given the subjet&#x27;s features
 
 ## Documentation For Models
 
- - [APIBillingPeriodUsageOut](docs/APIBillingPeriodUsageOut.md)
- - [APICounterV2Out](docs/APICounterV2Out.md)
- - [APIKeyOut](docs/APIKeyOut.md)
- - [APIPeriodUsageOut](docs/APIPeriodUsageOut.md)
- - [APIPlanOut](docs/APIPlanOut.md)
- - [APIPlanSubscriptionOut](docs/APIPlanSubscriptionOut.md)
- - [APIPlansOut](docs/APIPlansOut.md)
- - [APIUsageAggregatedOut](docs/APIUsageAggregatedOut.md)
- - [APIUsageHistoryOut](docs/APIUsageHistoryOut.md)
- - [BatchFitIn](docs/BatchFitIn.md)
- - [BatchPredictIn](docs/BatchPredictIn.md)
- - [BatchPredictOut](docs/BatchPredictOut.md)
- - [BillingHistoryOut](docs/BillingHistoryOut.md)
- - [BillingInfoInOut](docs/BillingInfoInOut.md)
- - [CacheMetricsOut](docs/CacheMetricsOut.md)
- - [ClassifierOut](docs/ClassifierOut.md)
- - [ClassifierSpecIn](docs/ClassifierSpecIn.md)
- - [CurrenciesOut](docs/CurrenciesOut.md)
- - [FitIn](docs/FitIn.md)
- - [GotyaCounterOut](docs/GotyaCounterOut.md)
- - [InvoiceItemOut](docs/InvoiceItemOut.md)
- - [InvoiceOut](docs/InvoiceOut.md)
- - [PredictIn](docs/PredictIn.md)
- - [PredictOut](docs/PredictOut.md)
- - [SoftwareVersionOut](docs/SoftwareVersionOut.md)
- - [SpamEventOut](docs/SpamEventOut.md)
- - [SpamStatsOut](docs/SpamStatsOut.md)
- - [StripeCardOut](docs/StripeCardOut.md)
- - [StripeCustomerOut](docs/StripeCustomerOut.md)
- - [SystemMetricsOut](docs/SystemMetricsOut.md)
- - [UserInfoOut](docs/UserInfoOut.md)
-
+ - [APIBillingPeriodUsageOut](docs/models/APIBillingPeriodUsageOut.md)
+ - [APICounterV2Out](docs/models/APICounterV2Out.md)
+ - [APIKeyOut](docs/models/APIKeyOut.md)
+ - [APIPeriodUsageOut](docs/models/APIPeriodUsageOut.md)
+ - [APIPlanOut](docs/models/APIPlanOut.md)
+ - [APIPlanSubscriptionOut](docs/models/APIPlanSubscriptionOut.md)
+ - [APIPlansOut](docs/models/APIPlansOut.md)
+ - [APIUsageAggregatedOut](docs/models/APIUsageAggregatedOut.md)
+ - [APIUsageHistoryOut](docs/models/APIUsageHistoryOut.md)
+ - [BatchFitIn](docs/models/BatchFitIn.md)
+ - [BatchPredictIn](docs/models/BatchPredictIn.md)
+ - [BatchPredictOut](docs/models/BatchPredictOut.md)
+ - [BillingHistoryOut](docs/models/BillingHistoryOut.md)
+ - [BillingInfoInOut](docs/models/BillingInfoInOut.md)
+ - [CacheMetricsOut](docs/models/CacheMetricsOut.md)
+ - [ClassifierOut](docs/models/ClassifierOut.md)
+ - [ClassifierSpecIn](docs/models/ClassifierSpecIn.md)
+ - [CurrenciesOut](docs/models/CurrenciesOut.md)
+ - [FitIn](docs/models/FitIn.md)
+ - [GotyaCounterOut](docs/models/GotyaCounterOut.md)
+ - [InvoiceItemOut](docs/models/InvoiceItemOut.md)
+ - [InvoiceOut](docs/models/InvoiceOut.md)
+ - [PredictIn](docs/models/PredictIn.md)
+ - [PredictOut](docs/models/PredictOut.md)
+ - [SoftwareVersionOut](docs/models/SoftwareVersionOut.md)
+ - [SpamEventOut](docs/models/SpamEventOut.md)
+ - [SpamStatsOut](docs/models/SpamStatsOut.md)
+ - [StripeCardOut](docs/models/StripeCardOut.md)
+ - [StripeCustomerOut](docs/models/StripeCustomerOut.md)
+ - [SystemMetricsOut](docs/models/SystemMetricsOut.md)
+ - [UserInfoOut](docs/models/UserInfoOut.md)
 
 ## Documentation For Authorization
 
-
-## api_key
+Authentication schemes defined for the API:
+<a id="api_key"></a>
+### api_key
 
 - **Type**: API key
 - **API key parameter name**: X-API-KEY
@@ -184,5 +300,23 @@ Class | Method | HTTP request | Description
 ## Author
 
 contact@namsor.com
+contact@namsor.com
 
+## Notes for Large OpenAPI documents
+If the OpenAPI document is large, imports in gotyai_client.apis and gotyai_client.models may fail with a
+RecursionError indicating the maximum recursion limit has been exceeded. In that case, there are a couple of solutions:
 
+Solution 1:
+Use specific imports for apis and models like:
+- `from gotyai_client.apis.default_api import DefaultApi`
+- `from gotyai_client.model.pet import Pet`
+
+Solution 1:
+Before importing the package, adjust the maximum recursion limit as shown below:
+```
+import sys
+sys.setrecursionlimit(1500)
+import gotyai_client
+from gotyai_client.apis import *
+from gotyai_client.models import *
+```
